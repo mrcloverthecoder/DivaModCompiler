@@ -1,0 +1,4 @@
+[submodule "divalib"]
+	path = divalib
+	url = https://github.com/mrcloverthecoder/divalib
+	branch = main
