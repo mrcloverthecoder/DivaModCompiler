@@ -93,22 +93,22 @@ namespace Comfy
 	{
 		// NOTE: Two dimensional array [CubeFace][MipMap]
 		std::vector<std::vector<TexMipMap>> MipMapsArray;
-		std::optional<std::string> Name;
+		std::string Name = "";
 
 		inline const std::vector<TexMipMap>& GetMipMaps(u32 arrayIndex) const { return MipMapsArray[arrayIndex]; }
 		inline TxpSig GetSignature() const { return (MipMapsArray.size() == 6) ? TxpSig::CubeMap : TxpSig::Texture2D; }
 		inline ivec2 GetSize() const { return (MipMapsArray.size() < 1 || MipMapsArray.front().size() < 1) ? ivec2(0, 0) : MipMapsArray.front().front().Size; }
 		inline TextureFormat GetFormat() const { return (MipMapsArray.size() < 1 || MipMapsArray.front().size() < 1) ? TextureFormat::Unknown : MipMapsArray.front().front().Format; }
-		inline std::string_view GetName() const { return (Name.has_value()) ? Name.value() : FallbackTextureName; }
-		StreamResult Read(StreamReader& reader);
+		inline std::string_view GetName() const { return (Name.size() > 0) ? Name : FallbackTextureName; }
+		StreamResult Read(IO::Reader& reader);
 	};
 
 	struct TexSet final : IStreamReadable, IStreamWritable
 	{
 		std::vector<std::shared_ptr<Tex>> Textures;
 
-		StreamResult Read(StreamReader& reader) override;
-		StreamResult Write(StreamWriter& writer) override;
+		StreamResult Read(IO::Reader& reader) override;
+		StreamResult Write(IO::Writer& writer) override;
 	};
 
 	struct Spr
@@ -134,7 +134,7 @@ namespace Comfy
 		TexSet TexSet;
 		std::vector<Spr> Sprites;
 
-		StreamResult Read(StreamReader& reader) override;
-		StreamResult Write(StreamWriter& writer) override;
+		StreamResult Read(IO::Reader& reader) override;
+		StreamResult Write(IO::Writer& writer) override;
 	};
 }

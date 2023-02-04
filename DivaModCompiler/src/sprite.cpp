@@ -1,9 +1,9 @@
 #include <json.hpp>
 #include <core_io.h>
+#include <diva_archive.h>
 #include <diva_db.h>
 #include <util_string.h>
 #include "comfy/texture_util.h"
-#include "comfy/file_format_farc.h"
 #include "sprite.h"
 
 using namespace Sprite;
@@ -133,9 +133,10 @@ static bool MergeBaseSpriteData(Comfy::SprSet& sprSet, Database::SpriteSetInfo& 
 	size_t idx = 0;
 	for (const auto& tex : baseSprSet->TexSet.Textures)
 	{
+		std::string a = tex->Name;
 		// NOTE: Push textures from the base sprset into the merged one
 		auto texNew = std::make_shared<Comfy::Tex>();
-		texNew->Name = GetTextureNameWithNewIndex(tex->Name.value(), texNum + idx);
+		texNew->Name = GetTextureNameWithNewIndex(tex->Name, texNum + idx);
 		texNew->MipMapsArray = std::move(tex->MipMapsArray);
 		sprSet.TexSet.Textures.push_back(std::move(texNew));
 
@@ -205,7 +206,7 @@ void Sprite::CompileSpriteSetsWithDB(std::string& outputPath, SpriteSetList& inf
 		int32_t texIndex = 0;
 		for (auto& tex : sprSet->TexSet.Textures)
 		{
-			std::string texName = tex->Name.has_value() ? tex->Name.value() : "MERGE_NOCOMP_0";
+			std::string texName = (tex->Name.size() > 0) ? tex->Name : "MERGE_NOCOMP_0";
 			std::string texPrefix = "SPRTEX_" + std::string(&srcSetInfo.Name[4], srcSetInfo.Name.size() - 4);
 
 			Database::SpriteDataInfo& texInfo = sprSetInfo.Textures.emplace_back();
@@ -217,10 +218,19 @@ void Sprite::CompileSpriteSetsWithDB(std::string& outputPath, SpriteSetList& inf
 		// NOTE: Try to merge base-game entries, if applicable
 		MergeBaseSpriteData(*sprSet, sprSetInfo);
 
+		// NOTE: Write SpriteSet
+		IO::Writer writer = { };
+		sprSet->Write(writer);
+
 		// NOTE: Pack the SpriteSet into its farc
-		Comfy::FArcPacker farcPacker = { };
-		farcPacker.AddFile(Util::String::ToLower(srcSetInfo.Name) + ".bin", *sprSet);
-		farcPacker.CreateFlushFArc(outputPath + "/" + Util::String::ToLower(srcSetInfo.Name) + ".farc", true);
+		Archive::FArcPacker farcPacker = { };
+		Archive::FArcPacker::FArcFile file = { };
+		file.Filename = Util::String::ToLower(srcSetInfo.Name) + ".bin";
+		file.Data = writer.GetData();
+		file.Size = writer.GetSize();
+
+		farcPacker.AddFile(file);
+		farcPacker.Flush(outputPath + "/" + Util::String::ToLower(srcSetInfo.Name) + ".farc", false);
 	}
 
 	// NOTE: Write SpriteDatabase file

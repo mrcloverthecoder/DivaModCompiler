@@ -24,16 +24,17 @@
 
 namespace Comfy
 {
-	StreamResult Tex::Read(StreamReader& reader)
+	StreamResult Tex::Read(IO::Reader& reader)
 	{
 		reader.PushBaseOffset();
-		const auto texSignature = static_cast<TxpSig>(reader.ReadU32());
-		const auto mipMapCount = reader.ReadU32();
 
-		const auto mipLevels = reader.ReadU8();
-		const auto arraySize = reader.ReadU8();
-		const auto depth = reader.ReadU8();
-		const auto dimensions = reader.ReadU8();
+		const auto texSignature = static_cast<TxpSig>(reader.ReadUInt32());
+		const auto mipMapCount = reader.ReadUInt32();
+
+		const auto mipLevels = reader.ReadUInt8();
+		const auto arraySize = reader.ReadUInt8();
+		const auto depth = reader.ReadUInt8();
+		const auto dimensions = reader.ReadUInt8();
 
 		if (texSignature != TxpSig::Texture2D && texSignature != TxpSig::CubeMap)
 			return StreamResult::BadFormat;
@@ -48,14 +49,14 @@ namespace Comfy
 
 			for (size_t j = 0; j < adjustedMipLevels; j++)
 			{
-				const auto mipMapOffset = reader.ReadPtr_32();
-				if (!reader.IsValidPointer(mipMapOffset))
+				const auto mipMapOffset = reader.ReadInt32();
+				if (mipMapOffset <= 0)
 					return StreamResult::BadPointer;
 
 				auto streamResult = StreamResult::Success;
-				reader.ReadAtOffsetAware(mipMapOffset, [&](StreamReader& reader)
+				reader.ReadAtOffset(mipMapOffset, [&](IO::Reader& reader)
 				{
-					const auto mipSignature = static_cast<TxpSig>(reader.ReadU32());
+					const auto mipSignature = static_cast<TxpSig>(reader.ReadUInt32());
 					if (mipSignature != TxpSig::MipMap)
 					{
 						streamResult = StreamResult::BadFormat;
@@ -63,24 +64,24 @@ namespace Comfy
 					}
 
 					auto& mipMap = mipMaps.emplace_back();
-					mipMap.Size.x = reader.ReadI32();
-					mipMap.Size.y = reader.ReadI32();
-					mipMap.Format = static_cast<TextureFormat>(reader.ReadU32());
+					mipMap.Size.x = reader.ReadUInt32();
+					mipMap.Size.y = reader.ReadUInt32();
+					mipMap.Format = static_cast<TextureFormat>(reader.ReadUInt32());
 
-					const auto mipIndex = reader.ReadU8();
-					const auto arrayIndex = reader.ReadU8();
-					const auto padding = reader.ReadU16();
+					const auto mipIndex = reader.ReadUInt8();
+					const auto arrayIndex = reader.ReadUInt8();
+					const auto padding = reader.ReadUInt16();
 
-					mipMap.DataSize = reader.ReadU32();
-					if (mipMap.DataSize > static_cast<size_t>(reader.GetRemaining()))
+					mipMap.DataSize = reader.ReadUInt32();
+					if (mipMap.DataSize > reader.GetRemaining())
 					{
 						streamResult = StreamResult::BadCount;
 						return;
 					}
 
 					mipMap.Data = std::make_unique<u8[]>(mipMap.DataSize);
-					reader.ReadBuffer(mipMap.Data.get(), mipMap.DataSize);
-				});
+					reader.Read(mipMap.Data.get(), mipMap.DataSize);
+				}, true);
 				if (streamResult != StreamResult::Success)
 					return streamResult;
 			}
@@ -90,28 +91,13 @@ namespace Comfy
 		return StreamResult::Success;
 	}
 
-	StreamResult TexSet::Read(StreamReader& reader)
+	StreamResult TexSet::Read(IO::Reader& reader)
 	{
-		auto baseHeader = SectionHeader::TryRead(reader, SectionSignature::MTXD);
-		if (!baseHeader.has_value())
-			baseHeader = SectionHeader::TryRead(reader, SectionSignature::TXPC);
-
-		SectionHeader::ScanPOFSectionsForPtrSize(reader);
-
-		if (baseHeader.has_value())
-		{
-			reader.SetEndianness(baseHeader->Endianness);
-			reader.Seek(baseHeader->StartOfSubSectionAddress());
-
-			if (reader.GetPtrSize() == PtrSize::Mode64Bit)
-				reader.PushBaseOffset();
-		}
-
 		reader.PushBaseOffset();
 
-		const auto setSignature = static_cast<TxpSig>(reader.ReadU32());
-		const auto textureCount = reader.ReadU32();
-		const auto packedInfo = reader.ReadU32();
+		const auto setSignature = static_cast<TxpSig>(reader.ReadUInt32());
+		const auto textureCount = reader.ReadUInt32();
+		const auto packedInfo = reader.ReadUInt32();
 
 		if (setSignature != TxpSig::TexSet)
 			return StreamResult::BadFormat;
@@ -119,242 +105,220 @@ namespace Comfy
 		Textures.reserve(textureCount);
 		for (size_t i = 0; i < textureCount; i++)
 		{
-			const auto textureOffset = reader.ReadPtr_32();
-			if (!reader.IsValidPointer(textureOffset))
+			const auto textureOffset = reader.ReadInt32();
+			if (textureOffset <= 0)
 				return StreamResult::BadPointer;
 
 			auto streamResult = StreamResult::Success;
-			reader.ReadAtOffsetAware(textureOffset, [&](StreamReader& reader)
+			reader.ReadAtOffset(textureOffset, [&](IO::Reader& reader)
 			{
 				streamResult = Textures.emplace_back(std::make_shared<Tex>())->Read(reader);
-			});
+			}, true);
 
 			if (streamResult != StreamResult::Success)
 				return streamResult;
 		}
 
 		reader.PopBaseOffset();
-
-		if (baseHeader.has_value() && reader.GetPtrSize() == PtrSize::Mode64Bit)
-			reader.PopBaseOffset();
-
 		return StreamResult::Success;
 	}
 
-	StreamResult TexSet::Write(StreamWriter& writer)
+	StreamResult TexSet::Write(IO::Writer& writer)
 	{
+		const size_t texSetOffset = writer.GetPosition();
 		const u32 textureCount = static_cast<u32>(Textures.size());
 		constexpr u32 packedMask = 0x01010100;
 
-		const FileAddr setBaseAddress = writer.GetPosition();
-		writer.WriteU32(static_cast<u32>(TxpSig::TexSet));
-		writer.WriteU32(textureCount);
-		writer.WriteU32(textureCount | packedMask);
+		writer.WriteUInt32(static_cast<u32>(TxpSig::TexSet));
+		writer.WriteUInt32(textureCount);
+		writer.WriteUInt32(textureCount | packedMask);
 
 		for (const auto& texture : Textures)
 		{
-			writer.WriteFuncPtr([&](StreamWriter& writer)
+			writer.ScheduleWriteOffset([&](IO::Writer& writer)
 			{
-				const FileAddr texBaseAddress = writer.GetPosition();
+				const size_t texOffset = writer.GetPosition();
 				const u8 arraySize = static_cast<u8>(texture->MipMapsArray.size());
 				const u8 mipLevels = (arraySize > 0) ? static_cast<u8>(texture->MipMapsArray.front().size()) : 0;
 
-				writer.WriteU32(static_cast<u32>(texture->GetSignature()));
-				writer.WriteU32(arraySize * mipLevels);
-				writer.WriteU8(mipLevels);
-				writer.WriteU8(arraySize);
-				writer.WriteU8(0x01);
-				writer.WriteU8(0x01);
+				writer.WriteUInt32(static_cast<u32>(texture->GetSignature()));
+				writer.WriteUInt32(arraySize * mipLevels);
+				writer.WriteUInt8(mipLevels);
+				writer.WriteUInt8(arraySize);
+				writer.WriteUInt8(0x01);
+				writer.WriteUInt8(0x01);
 
 				for (u8 arrayIndex = 0; arrayIndex < arraySize; arrayIndex++)
 				{
 					for (u8 mipIndex = 0; mipIndex < mipLevels; mipIndex++)
 					{
-						writer.WriteFuncPtr([arrayIndex, mipIndex, &texture](StreamWriter& writer)
+						writer.ScheduleWriteOffset([arrayIndex, mipIndex, &texture](IO::Writer& writer)
 						{
 							const auto& mipMap = texture->MipMapsArray[arrayIndex][mipIndex];
-							writer.WriteU32(static_cast<u32>(TxpSig::MipMap));
-							writer.WriteI32(mipMap.Size.x);
-							writer.WriteI32(mipMap.Size.y);
-							writer.WriteU32(static_cast<u32>(mipMap.Format));
-							writer.WriteU8(mipIndex);
-							writer.WriteU8(arrayIndex);
-							writer.WriteU8(0x00);
-							writer.WriteU8(0x00);
-							writer.WriteU32(mipMap.DataSize);
-							writer.WriteBuffer(mipMap.Data.get(), mipMap.DataSize);
-						}, texBaseAddress);
+							writer.WriteUInt32(static_cast<u32>(TxpSig::MipMap));
+							writer.WriteInt32(mipMap.Size.x);
+							writer.WriteInt32(mipMap.Size.y);
+							writer.WriteUInt32(static_cast<u32>(mipMap.Format));
+							writer.WriteUInt8(mipIndex);
+							writer.WriteUInt8(arrayIndex);
+							writer.WriteUInt8(0x00);
+							writer.WriteUInt8(0x00);
+							writer.WriteUInt32(mipMap.DataSize);
+							writer.Write(mipMap.Data.get(), mipMap.DataSize);
+						}, texOffset);
 					}
 				}
-			}, setBaseAddress);
+			}, texSetOffset);
 		}
-
-		writer.FlushPointerPool();
-		writer.WriteAlignmentPadding(16);
+		
+		writer.FlushScheduledWrites();
+		writer.Pad(0x10);
 
 		return StreamResult::Success;
 	}
 
-	StreamResult SprSet::Read(StreamReader& reader)
+	StreamResult SprSet::Read(IO::Reader& reader)
 	{
-		const auto baseHeader = SectionHeader::TryRead(reader, SectionSignature::SPRC);
-		SectionHeader::ScanPOFSectionsForPtrSize(reader);
-
-		if (baseHeader.has_value())
-		{
-			reader.SetEndianness(baseHeader->Endianness);
-			reader.Seek(baseHeader->StartOfSubSectionAddress());
-
-			if (reader.GetPtrSize() == PtrSize::Mode64Bit)
-				reader.PushBaseOffset();
-		}
-
-		Flags = reader.ReadU32();
-		const auto texSetOffset = reader.ReadPtr_32();
-		const auto textureCount = reader.ReadSize_32();
-		const auto spriteCount = reader.ReadU32();
-		const auto spritesOffset = reader.ReadPtr();
-		const auto textureNamesOffset = reader.ReadPtr();
-		const auto spriteNamesOffset = reader.ReadPtr();
-		const auto spriteExtraDataOffset = reader.ReadPtr();
+		Flags = reader.ReadUInt32();
+		const auto texSetOffset = reader.ReadInt32();
+		const auto textureCount = reader.ReadUInt32();
+		const auto spriteCount = reader.ReadUInt32();
+		const auto spritesOffset = reader.ReadInt32();
+		const auto textureNamesOffset = reader.ReadInt32();
+		const auto spriteNamesOffset = reader.ReadInt32();
+		const auto spriteExtraDataOffset = reader.ReadInt32();
 
 		if (textureCount > 0)
 		{
 			auto streamResult = StreamResult::Success;
-			if (reader.HasSections)
-			{
-				const auto texSetStartOffset = baseHeader->EndOfSectionAddress();
-				reader.ReadAt(texSetStartOffset, [&](StreamReader& reader) { streamResult = TexSet.Read(reader); });
-			}
-			else
-			{
-				if (!reader.IsValidPointer(texSetOffset))
-					return StreamResult::BadPointer;
+			if (texSetOffset <= 0)
+				return StreamResult::BadPointer;
 
-				reader.ReadAtOffsetAware(texSetOffset, [&](StreamReader& reader) { streamResult = TexSet.Read(reader); });
-			}
+			reader.ReadAtOffset(static_cast<size_t>(texSetOffset), [&](IO::Reader& reader)
+			{
+				this->TexSet.Read(reader);
+			});
+
 			if (streamResult != StreamResult::Success)
 				return streamResult;
 
-			if (reader.IsValidPointer(textureNamesOffset) && TexSet.Textures.size() == textureCount)
+			if (textureNamesOffset > 0 && TexSet.Textures.size() == textureCount)
 			{
-				reader.ReadAtOffsetAware(textureNamesOffset, [&](StreamReader& reader)
+				reader.ReadAtOffset(textureNamesOffset, [&](IO::Reader& reader)
 				{
 					for (auto& texture : this->TexSet.Textures)
-						texture->Name = reader.ReadStrPtrOffsetAware();
+						texture->Name = reader.ReadStringOffset();
 				});
 			}
 		}
 
 		if (spriteCount > 0)
 		{
-			if (!reader.IsValidPointer(spritesOffset) || !reader.IsValidPointer(spriteExtraDataOffset))
+			if (spritesOffset <= 0 || spriteExtraDataOffset <= 0)
 				return StreamResult::BadPointer;
 
 			auto streamResult = StreamResult::Success;
-			reader.ReadAtOffsetAware(spritesOffset, [&](StreamReader& reader)
+			reader.ReadAtOffset(spritesOffset, [&](IO::Reader& reader)
 			{
 				Sprites.reserve(spriteCount);
 				for (size_t i = 0; i < spriteCount; i++)
 				{
 					auto& sprite = Sprites.emplace_back();
-					sprite.TextureIndex = reader.ReadI32();
-					sprite.Rotate = reader.ReadI32();
-					sprite.TexelRegion = reader.ReadVec4();
-					sprite.PixelRegion = reader.ReadVec4();
+					sprite.TextureIndex = reader.ReadUInt32();
+					sprite.Rotate = reader.ReadUInt32();
+					reader.Read(&sprite.TexelRegion, sizeof(vec4));
+					reader.Read(&sprite.PixelRegion, sizeof(vec4));
 				}
 			});
 			if (streamResult != StreamResult::Success)
 				return streamResult;
 
-			if (reader.IsValidPointer(spriteNamesOffset) && Sprites.size() == spriteCount)
+			if (spriteNamesOffset > 0 && Sprites.size() == spriteCount)
 			{
-				reader.ReadAtOffsetAware(spriteNamesOffset, [&](StreamReader& reader)
+				reader.ReadAtOffset(spriteNamesOffset, [&](IO::Reader& reader)
 				{
 					for (auto& sprite : Sprites)
-						sprite.Name = reader.ReadStrPtrOffsetAware();
+						sprite.Name = reader.ReadStringOffset();
 				});
 			}
 
-			reader.ReadAtOffsetAware(spriteExtraDataOffset, [&](StreamReader& reader)
+			reader.ReadAtOffset(spriteExtraDataOffset, [&](IO::Reader& reader)
 			{
 				for (auto& sprite : Sprites)
 				{
-					sprite.Extra.Flags = reader.ReadU32();
-					sprite.Extra.ScreenMode = static_cast<ScreenMode>(reader.ReadU32());
+					sprite.Extra.Flags = reader.ReadUInt32();
+					sprite.Extra.ScreenMode = static_cast<ScreenMode>(reader.ReadUInt32());
 				}
 			});
 		}
 
-		if (baseHeader.has_value() && reader.GetPtrSize() == PtrSize::Mode64Bit)
-			reader.PopBaseOffset();
-
 		return StreamResult::Success;
 	}
 
-	StreamResult SprSet::Write(StreamWriter& writer)
+	StreamResult SprSet::Write(IO::Writer& writer)
 	{
-		writer.WriteU32(Flags);
+		writer.WriteUInt32(Flags);
 
 		const auto texSetPtrAddress = writer.GetPosition();
-		writer.WriteU32(0x00000000);
-		writer.WriteU32(static_cast<u32>(TexSet.Textures.size()));
+		writer.WriteUInt32(0x00000000);
+		writer.WriteUInt32(static_cast<u32>(TexSet.Textures.size()));
 
-		writer.WriteU32(static_cast<u32>(Sprites.size()));
-		writer.WriteFuncPtr([&](StreamWriter& writer)
+		writer.WriteUInt32(static_cast<u32>(Sprites.size()));
+		writer.ScheduleWriteOffset([this](IO::Writer& writer)
 		{
 			for (const auto& sprite : Sprites)
 			{
-				writer.WriteI32(sprite.TextureIndex);
-				writer.WriteI32(sprite.Rotate);
-				writer.WriteF32(sprite.TexelRegion.x);
-				writer.WriteF32(sprite.TexelRegion.y);
-				writer.WriteF32(sprite.TexelRegion.z);
-				writer.WriteF32(sprite.TexelRegion.w);
-				writer.WriteF32(sprite.PixelRegion.x);
-				writer.WriteF32(sprite.PixelRegion.y);
-				writer.WriteF32(sprite.PixelRegion.z);
-				writer.WriteF32(sprite.PixelRegion.w);
+				writer.WriteInt32(sprite.TextureIndex);
+				writer.WriteInt32(sprite.Rotate);
+				writer.WriteFloat32(sprite.TexelRegion.x);
+				writer.WriteFloat32(sprite.TexelRegion.y);
+				writer.WriteFloat32(sprite.TexelRegion.z);
+				writer.WriteFloat32(sprite.TexelRegion.w);
+				writer.WriteFloat32(sprite.PixelRegion.x);
+				writer.WriteFloat32(sprite.PixelRegion.y);
+				writer.WriteFloat32(sprite.PixelRegion.z);
+				writer.WriteFloat32(sprite.PixelRegion.w);
 			}
 		});
 
-		writer.WriteFuncPtr([&](StreamWriter& writer)
+		
+		writer.ScheduleWriteOffset([this](IO::Writer& writer)
 		{
-			for (const auto& texture : this->TexSet.Textures)
+			for (const auto& texture : TexSet.Textures)
 			{
-				if (texture->Name.has_value())
-					writer.WriteStrPtr(texture->Name.value());
+				if (texture->Name.size() > 0)
+					writer.ScheduleWriteStringOffset(texture->Name);
 				else
-					writer.WritePtr(FileAddr::NullPtr);
+					writer.WriteInt32(0);
 			}
 		});
+		
 
-		writer.WriteFuncPtr([&](StreamWriter& writer)
+		writer.ScheduleWriteOffset([this](IO::Writer& writer)
 		{
 			for (const auto& sprite : Sprites)
-				writer.WriteStrPtr(sprite.Name);
+				writer.ScheduleWriteStringOffset(sprite.Name);
 		});
 
-		writer.WriteFuncPtr([&](StreamWriter& writer)
+		writer.ScheduleWriteOffset([this](IO::Writer& writer)
 		{
 			for (const auto& sprite : Sprites)
 			{
-				writer.WriteU32(sprite.Extra.Flags);
-				writer.WriteU32(static_cast<u32>(sprite.Extra.ScreenMode));
+				writer.WriteUInt32(sprite.Extra.Flags);
+				writer.WriteUInt32(static_cast<u32>(sprite.Extra.ScreenMode));
 			}
 		});
-
-		writer.FlushPointerPool();
-		writer.WriteAlignmentPadding(16);
-
-		writer.FlushStringPointerPool();
-		writer.WriteAlignmentPadding(16);
+		
+		writer.FlushScheduledWrites();
+		writer.Pad(0x10);
+		writer.FlushScheduledStrings();
+		writer.Pad(0x10);
 
 		const auto texSetPtr = writer.GetPosition();
 		TexSet.Write(writer);
 
 		writer.Seek(texSetPtrAddress);
-		writer.WritePtr(texSetPtr);
+		writer.WriteInt32(static_cast<int32_t>(texSetPtr));
 
 		return StreamResult::Success;
 	}

@@ -5,7 +5,7 @@
 #include "sprite.h"
 
 // TODO: Load from config.toml
-std::string ModsFolder = "./mods";
+std::string ModsFolder = "./mods_102";
 std::string SourceFolder = "rom_src";
 
 int main()

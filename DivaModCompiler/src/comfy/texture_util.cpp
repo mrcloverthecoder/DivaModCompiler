@@ -79,28 +79,12 @@ namespace Comfy
 		if (rgbaPixels == nullptr || size.x <= 0 || size.y <= 0)
 			return false;
 
-		const std::string_view extension = Path::GetExtension(filePath);
 		const std::string nullTerminatedFilePath = std::string(filePath);
 
-		if (ASCII::MatchesInsensitive(extension, ".bmp"))
-		{
-			return stbi_write_bmp(nullTerminatedFilePath.c_str(), size.x, size.y, ChannelsRGBA, rgbaPixels);
-		}
-		else if (ASCII::MatchesInsensitive(extension, ".png"))
-		{
-			// static constexpr i32 bitsPerPixel = ChannelsRGBA * BitsPerByte;
-			// const i32 pixelsPerLine = (size.x % bitsPerPixel != 0) ? (size.x + (bitsPerPixel - (size.x % bitsPerPixel))) : (size.x);
+		// NOTE: For simplicity sake proper 16 byte stride alignment will be ignored for now
+		const i32 pixelsPerLine = size.x;
 
-			// NOTE: For simplicity sake proper 16 byte stride alignment will be ignored for now
-			const i32 pixelsPerLine = size.x;
-
-			return stbi_write_png(nullTerminatedFilePath.c_str(), size.x, size.y, ChannelsRGBA, rgbaPixels, pixelsPerLine * ChannelsRGBA);
-		}
-		else
-		{
-			assert(false);
-			return false;
-		}
+		return stbi_write_png(nullTerminatedFilePath.c_str(), size.x, size.y, ChannelsRGBA, rgbaPixels, pixelsPerLine * ChannelsRGBA);
 	}
 }
 
@@ -672,83 +656,6 @@ namespace Comfy
 
 		return true;
 	}
-
-	b8 LoadDDSToTexture(std::string_view filePath, Tex& outTexture)
-	{
-		auto outMetadata = ::DirectX::TexMetadata {};
-		auto outImage = ::DirectX::ScratchImage {};
-
-		if (FAILED(::DirectX::LoadFromDDSFile(UTF8::WideArg(filePath).c_str(), ::DirectX::DDS_FLAGS_NONE, &outMetadata, outImage)))
-			return false;
-
-		outTexture.Name = std::string(Path::GetFileName(filePath, false));
-		outTexture.MipMapsArray.resize(outMetadata.arraySize);
-
-		for (size_t arrayIndex = 0; arrayIndex < outTexture.MipMapsArray.size(); arrayIndex++)
-		{
-			auto& mipMaps = outTexture.MipMapsArray[arrayIndex];
-			mipMaps.resize(outMetadata.mipLevels);
-
-			for (size_t mipIndex = 0; mipIndex < mipMaps.size(); mipIndex++)
-			{
-				const auto* image = outImage.GetImage(mipIndex, arrayIndex, 0);
-
-				auto& mip = mipMaps[mipIndex];
-				mip.Size = ivec2(static_cast<i32>(image->width), static_cast<i32>(image->height));
-				mip.Format = DXGIFormatToTextureFormat(image->format);
-
-				if (mip.Format == TextureFormat::Unknown)
-					return false;
-
-				mip.DataSize = static_cast<u32>(image->slicePitch);
-				mip.Data = std::make_unique<u8[]>(mip.DataSize);
-				std::memcpy(mip.Data.get(), image->pixels, mip.DataSize);
-			}
-		}
-
-		return true;
-	}
-
-	b8 SaveTextureToDDS(std::string_view filePath, const Tex& inTexture)
-	{
-		if (inTexture.MipMapsArray.empty() || inTexture.MipMapsArray.front().empty())
-			return false;
-
-		const auto imageCount = inTexture.MipMapsArray.size() * inTexture.MipMapsArray.front().size();
-		if (imageCount < 1)
-			return false;
-
-		auto images = std::make_unique<::DirectX::Image[]>(imageCount);
-		auto imageWriteHead = images.get();
-
-		for (const auto& mipMaps : inTexture.MipMapsArray)
-		{
-			for (auto& mip : mipMaps)
-			{
-				imageWriteHead->width = mip.Size.x;
-				imageWriteHead->height = mip.Size.y;
-				imageWriteHead->format = TextureFormatToDXGI(mip.Format);
-				imageWriteHead->rowPitch = TextureFormatByteSize(ivec2(mip.Size.x, 1), mip.Format);
-				imageWriteHead->slicePitch = TextureFormatByteSize(mip.Size, mip.Format);
-				imageWriteHead->pixels = const_cast<u8*>(mip.Data.get());
-				imageWriteHead++;
-			}
-		}
-
-		auto metadata = ::DirectX::TexMetadata {};
-		metadata.width = images[0].width;
-		metadata.height = images[0].height;
-		metadata.depth = 1;
-		metadata.arraySize = inTexture.MipMapsArray.size();
-		metadata.mipLevels = inTexture.MipMapsArray.front().size();
-		metadata.format = images[0].format;
-		metadata.dimension = ::DirectX::TEX_DIMENSION_TEXTURE2D;
-
-		if (FAILED(::DirectX::SaveToDDSFile(images.get(), imageCount, metadata, ::DirectX::DDS_FLAGS_NONE, UTF8::WideArg(filePath).c_str())))
-			return false;
-
-		return true;
-	}
 }
 
 namespace Comfy
@@ -769,83 +676,6 @@ namespace Comfy
 	static constexpr b8 SpriteFitsInTexture(ivec2 sprPos, ivec2 sprSize, ivec2 texSize)
 	{
 		return (sprPos.x >= 0 && sprPos.x + sprSize.x <= texSize.x && sprPos.y >= 0 && sprPos.y + sprSize.y <= texSize.y);
-	}
-
-	void ExtractAllSprPNGs(std::string_view outputDirectory, const SprSet& sprSet)
-	{
-		if (sprSet.Sprites.empty() || sprSet.TexSet.Textures.empty())
-			return;
-
-		const auto& textures = sprSet.TexSet.Textures;
-		const auto& sprites = sprSet.Sprites;
-
-		const auto rgbaTextures = std::make_unique<std::unique_ptr<u8[]>[]>(textures.size());
-		const auto textureFutures = std::make_unique<std::future<void>[]>(textures.size());
-
-		for (size_t i = 0; i < textures.size(); i++)
-		{
-			textureFutures[i] = std::async(std::launch::async, [&, i]
-			{
-				auto& inTexture = *textures[i];
-				auto& outRGBA = rgbaTextures[i];
-
-				const auto rgbaByteSize = TextureFormatByteSize(inTexture.GetSize(), TextureFormat::RGBA8);
-				outRGBA = std::make_unique<u8[]>(rgbaByteSize);
-
-				if (!ConvertTextureToRGBABuffer(inTexture, outRGBA.get(), rgbaByteSize))
-					outRGBA = nullptr;
-			});
-		}
-
-		// NOTE: While the textures are still being decompressed in the background start allocating a large memory region to be and split up and used by each sprite
-		const auto combinedSprPixelsBuffer = std::make_unique<u32[]>(SumTotalSpritePixels(sprSet));
-		const auto spriteFutures = std::make_unique<std::future<void>[]>(sprites.size());
-
-		for (size_t i = 0; i < textures.size(); i++)
-			textureFutures[i].wait();
-
-		for (size_t i = 0, pixelIndex = 0; i < sprites.size(); i++)
-		{
-			u32* sprRGBA = &combinedSprPixelsBuffer[pixelIndex];
-			pixelIndex += SpritePixelCount(sprites[i]);
-
-			spriteFutures[i] = std::async(std::launch::async, [&, sprIndex = i, sprRGBA]
-			{
-				const auto& spr = sprites[sprIndex];
-				if (!InBounds(spr.TextureIndex, textures))
-					return;
-
-				const ivec2 sprPos = ivec2(static_cast<i32>(spr.PixelRegion.x), static_cast<i32>(spr.PixelRegion.y));
-				const ivec2 sprSize = ivec2(static_cast<i32>(spr.GetSize().x), static_cast<i32>(spr.GetSize().y));
-				const ivec2 texSize = textures[spr.TextureIndex]->GetSize();
-
-				if (!SpriteFitsInTexture(sprPos, sprSize, texSize))
-					return;
-
-				const u32* texRGBA = reinterpret_cast<const u32*>(rgbaTextures[spr.TextureIndex].get());
-				if (texRGBA == nullptr)
-					return;
-
-				for (size_t y = 0; y < sprSize.y; y++)
-				{
-					for (size_t x = 0; x < sprSize.x; x++)
-					{
-						// NOTE: Also perform texture Y flip
-						const u32 texPixel = texRGBA[texSize.x * ((texSize.y - 1) - y - sprPos.y) + (x + sprPos.x)];
-
-						sprRGBA[sprSize.x * y + x] = texPixel;
-					}
-				}
-
-				const auto fileName = ASCII::ToLowerCopy(spr.Name) + ".png";
-				const auto filePath = Path::Combine(outputDirectory, fileName);
-
-				WriteImageFile(filePath, sprSize, sprRGBA);
-			});
-		}
-
-		for (size_t i = 0; i < sprites.size(); i++)
-			spriteFutures[i].wait();
 	}
 
 	static constexpr size_t RGBABytesPerPixel = 4;

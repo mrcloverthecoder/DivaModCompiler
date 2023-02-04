@@ -151,22 +151,17 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\comfy\core_io.cpp" />
     <ClCompile Include="src\comfy\core_string.cpp" />
     <ClCompile Include="src\comfy\core_type.cpp" />
-    <ClCompile Include="src\comfy\file_format_common.cpp" />
-    <ClCompile Include="src\comfy\file_format_farc.cpp" />
     <ClCompile Include="src\comfy\file_format_spr_set.cpp" />
     <ClCompile Include="src\comfy\texture_util.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\sprite.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\comfy\core_io.h" />
     <ClInclude Include="src\comfy\core_string.h" />
     <ClInclude Include="src\comfy\core_types.h" />
     <ClInclude Include="src\comfy\file_format_common.h" />
-    <ClInclude Include="src\comfy\file_format_farc.h" />
     <ClInclude Include="src\comfy\file_format_spr_set.h" />
     <ClInclude Include="src\comfy\texture_util.h" />
     <ClInclude Include="src\sprite.h" />
